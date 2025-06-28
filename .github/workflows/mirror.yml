@@ -1,0 +1,26 @@
+name: Mirrors
+
+on: [push, workflow_dispatch]
+
+jobs:
+  mirrors:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: yesolutions/mirror-action@master
+        with:
+          REMOTE_NAME: gitlab
+          REMOTE: 'https://gitlab.com/medrivia/serai.nvim.git'
+          GIT_USERNAME: medrivia
+          GIT_PASSWORD: ${{ secrets.GITLAB_TOKEN }}
+          PUSH_ALL_REFS: false
+      - uses: yesolutions/mirror-action@master
+        with:
+          REMOTE_NAME: codeberg
+          REMOTE: 'https://codeberg.org/medrivia/serai.nvim.git'
+          GIT_USERNAME: medrivia
+          GIT_PASSWORD: ${{ secrets.CODEBERG_TOKEN }}
