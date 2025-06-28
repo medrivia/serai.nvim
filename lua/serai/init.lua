@@ -1,5 +1,6 @@
 --- @see https://github.com/ellisonleao/nvim-plugin-template/blob/main/lua/plugin_name.lua
 
+-- id=util-iif
 function IIF(cond, T, F) -- ternary conditional operator / inline if
 	if cond then
 		return T
@@ -8,17 +9,20 @@ function IIF(cond, T, F) -- ternary conditional operator / inline if
 	end
 end
 
+-- id=actions
 --- @enum (key) serai.Actions
 local actions = {
 	Enter = "Enter",
 	Search = "Search",
 	FileSearch = "FileSearch",
 	DirSearch = "DirSearch",
+	BufSearch = "BufSearch",
 	Inspect = "Inspect",
 	Reload = "Reload",
 	Quit = "Quit",
 }
 
+--- id=config-default
 --- @class serai.Config
 --- @field name "Umar"|"Bearcu" Your name
 --- @field keys table<string, serai.Actions> Your name
@@ -30,6 +34,7 @@ local config = {
 		["<Leader>ss"] = "Search",
 		["<Leader>sf"] = "FileSearch",
 		["<Leader>sd"] = "DirSearch",
+		["<Leader>sb"] = "BufSearch",
 		["<Leader>si"] = "Inspect",
 		["<Leader>sr"] = "Reload",
 		["<Leader>sq"] = "Quit",
@@ -84,10 +89,10 @@ M.is_float = function(win)
 end
 
 ---id=fn-is_valid_buf
-function M.is_valid_buf(buf)
+M.is_valid_buf = function(buf)
 	-- Skip special buffers
 	local buftype = vim.api.nvim_get_option_value("buftype", { buf = buf })
-    vim.notify(buftype)
+    -- vim.notify(buftype)
 	if buftype ~= "" and buftype ~= "quickfix" then
 		return false
 	end
@@ -115,6 +120,7 @@ M.is_valid_win = function(win)
 	return M.is_valid_buf(buf)
 end
 
+---id=fn-add_highlights
 M.add_highlights = function(win)
 	win = win or vim.api.nvim_get_current_win()
 	if not M.is_valid_win(win) then
@@ -132,7 +138,7 @@ M.add_highlights = function(win)
 		-- vim.notify(v.row .. " " .. v.col .. " " .. v.row2 .. " " .. v.col2)
 		M.bufs[buf] = true
         -- vim.api.nvim_buf_add_highlight(buf, M.ns, M.hl, v.row - 1, 0, -1)
-		vim.hl.range(buf, M.ns, M.hl, { v.row - 1, v.col - 1 }, { v.row2 - 1, v.col2 - 1 }, { priority = 1000 })
+		vim.hl.range(buf, M.ns, M.hl, { v.row - 1, v.col - 1 }, { v.row2 - 1, v.col2 - 1 }, { priority = 10000 })
 		-- vim.api.nvim_buf_set_extmark(buf, M.ns, v.row - 1, 0, { hl_group = M.hl, })
         vim.fn.sign_place(
             0,
@@ -157,6 +163,7 @@ end
 M.ns = vim.api.nvim_create_namespace("serai")
 M.hl = "SeraiId"
 
+---id=fn-signs
 function M.signs()
     vim.fn.sign_define("serai-sign", {
         text = "🪪",
@@ -278,6 +285,19 @@ M.filesearch = function(cwd)
 	})
 end
 
+-- id=fn-bufsearch
+M.bufsearch = function(cwd)
+	local cwd = cwd or vim.uv.cwd()
+	require("fzf-lua").fzf_exec(M.list_buffers(), {
+		cwd = cwd,
+		actions = {
+			Enter = function(selected)
+				M.search(selected[1])
+			end,
+		},
+	})
+end
+
 -- id=fn-dirsearch
 M.dirsearch = function()
 	require("fzf-lua").zoxide({
@@ -290,7 +310,7 @@ M.dirsearch = function()
 	})
 end
 
----id=fn-inspect
+-- id=fn-inspect
 M.inspect = function()
 	if not M.is_running then
 		vim.notify("Serai is not running!", vll.WARN, { timeout = 2000 })
@@ -317,6 +337,7 @@ M.quit = function()
 	M.is_running = false
 end
 
+-- id=fn-get_comments
 --- @summary Fetch comments
 --- @return nil|{row: number, col: number, row2: number, col2: number, text: string}[]
 --- @see https://github.com/ibhagwan/fzf-lua/blob/main/lua/fzf-lua/providers/buffers.lua#L492
@@ -342,6 +363,10 @@ M.get_comments = function(opts)
 		return
 	end
 
+    -- @experimental Map variable checks for duplicates.
+    local map = {}
+    local res = {}
+
 	-- @issue Disable for help (problematic)
 	if vim.tbl_contains({ "vimdoc" }, lang) then
 		return
@@ -349,13 +374,16 @@ M.get_comments = function(opts)
 	-- @issue For injected ones, use per-line basis
 	if vim.tbl_contains({ "markdown", "svelte" }, lang) then
 		vim.notify("Using legacy mode", vll.INFO, { timeout = 1000 })
-		local res = {}
 		for i, l in ipairs(vim.api.nvim_buf_get_lines(opts.bufnr, 0, -1, false)) do
 			-- local _, _, match = string.find(l, "^%s*<!--%W*id[:=](%S+)")
 			local start, finish, prefix, match = string.find(l, "^(%W+)id[:=](%S+)")
 			if match and M.is_comment(opts.bufnr, i, start + prefix:len()) then
 			-- if match then
-				table.insert(res, { row = i, col = start + prefix:len(), row2 = i, col2 = finish + 1, text = match })
+				table.insert(res, { row = i, col = start + prefix:len(), row2 = i, col2 = finish + 1, text = match, duplicate = false })
+                if map[match] then
+                    res[#res].duplicate = true
+                    res[map[match]] = true
+                end
 			end
 		end
 		return res
@@ -388,7 +416,6 @@ M.get_comments = function(opts)
 	-- 	end
 	-- end
 
-	local res = {}
 	for _, t in ipairs(trees) do
 		local root = t:root()
 		if not query then
@@ -402,10 +429,14 @@ M.get_comments = function(opts)
 			---```lua
 			---select(3, string.find("-id=hello", "%W*id[:=](%S+)")) == "hello"
 			---```
-			local col, _, match = string.find(text, "id[:=](%S+)")
+			local col, _, prefix, match = string.find(text, "^(%W+)id[:=](%S+)")
 			if match then
 				local row, _, row2, col2 = node:range()
-				table.insert(res, { row = row + 1, col = col, row2 = row2 + 1, col2 = col2 + 1, text = match })
+				table.insert(res, { row = row + 1, col = col + prefix:len(), row2 = row2 + 1, col2 = col2 + 1, text = match, duplicate = false })
+                if map[match] then
+                    res[#res].duplicate = true
+                    res[map[match]] = true
+                end
 			end
 		end
 		::done::
@@ -414,8 +445,8 @@ M.get_comments = function(opts)
 	return res
 end
 
+-- id=fn-has_ts_parser
 --- @see https://github.com/ibhagwan/fzf-lua/blob/main/lua/fzf-lua/utils.lua#L1384
----id=fn-has_ts_parser
 M.has_ts_parser = function(lang)
 	if vim.fn.has("nvim-0.11") == 1 then
 		return vim.treesitter.language.add(lang)
@@ -424,6 +455,12 @@ M.has_ts_parser = function(lang)
 	end
 end
 
+-- id=fn-list_buffers
+M.list_buffers = function()
+    return vim.tbl_map(function(buf) return vim.api.nvim_buf_get_name(buf) end, vim.tbl_filter(function(buf) return vim.api.nvim_buf_is_loaded(buf) and M.is_valid_buf(buf) end, vim.api.nvim_list_bufs()))
+end
+
+-- id=fn-find_buffer_by_name
 --- @see https://github.com/nvim-neo-tree/neo-tree.nvim/blob/main/lua/neo-tree/utils/init.lua#L205C1-L213C4
 --- @return integer
 M.find_buffer_by_name = function(name)
@@ -436,6 +473,7 @@ M.find_buffer_by_name = function(name)
 	return -1
 end
 
+-- id=fn-add_file_to_buffer
 --- @return integer
 M.add_file_to_buffer = function(name)
 	local bufnr = vim.api.nvim_create_buf(true, false)
@@ -444,7 +482,8 @@ M.add_file_to_buffer = function(name)
 	return bufnr
 end
 
-local function wait_for_parsing(buf)
+-- id=fn-wait_for_parsing
+M.wait_for_parsing = function(buf)
     local parser = vim.treesitter.get_parser(buf)
     if parser then
         local tree = parser:parse(true)[1]
@@ -455,12 +494,13 @@ local function wait_for_parsing(buf)
     return false
 end
 
+-- id=fn-is_comment
 --- @param buf integer Buffer number
 --- @param row integer 1-indexed
 --- @param col integer 1-indexed
 --- @see https://github.com/folke/todo-comments.nvim/blob/main/lua/todo-comments/highlight.lua#L62
 M.is_comment = function(buf, row, col)
-    while not wait_for_parsing(buf) do
+    while not M.wait_for_parsing(buf) do
         vim.wait(100)  -- Wait for 100ms before checking again
     end
     local captures = vim.treesitter.get_captures_at_pos(buf, row - 1, col)
