@@ -22,6 +22,7 @@ local actions = {
 --- @class serai.Config
 --- @field name "Umar"|"Bearcu" Your name
 --- @field keys table<string, serai.Actions> Your name
+--- @field exclude string[] filetypes
 local config = {
 	name = "Umar",
 	keys = {
@@ -33,6 +34,7 @@ local config = {
 		["<Leader>sr"] = "Reload",
 		["<Leader>sq"] = "Quit",
 	},
+	exclude = {},
 }
 local vll = vim.log.levels
 
@@ -42,12 +44,14 @@ local M = {}
 ---@type serai.Config
 M.config = config
 
+M.bufs = {}
+
 ---@type boolean
 M.is_running = false
 
 ---@summary
 ---
----id=fn-setup
+-- id=fn-setup
 ---@param args serai.Config?
 M.setup = function(args)
 	M.config = vim.tbl_deep_extend("force", M.config, args or {})
@@ -73,10 +77,112 @@ M.reload = function()
 	require("lazy.core.loader").reload("serai.nvim")
 end
 
+---id=fn-is_float
+M.is_float = function(win)
+	local opts = vim.api.nvim_win_get_config(win)
+	return opts and opts.relative and opts.relative ~= ""
+end
+
+---id=fn-is_valid_buf
+function M.is_valid_buf(buf)
+	-- Skip special buffers
+	local buftype = vim.api.nvim_get_option_value("buftype", { buf = buf })
+    vim.notify(buftype)
+	if buftype ~= "" and buftype ~= "quickfix" then
+		return false
+	end
+	local filetype = vim.api.nvim_get_option_value("filetype", { buf = buf })
+	if vim.tbl_contains(M.config.exclude, filetype) then
+		return false
+	end
+	return true
+end
+
+---id=fn-is_valid_win
+M.is_valid_win = function(win)
+	if not vim.api.nvim_win_is_valid(win) then
+		return false
+	end
+	-- avoid E5108 after pressing q:
+	if vim.fn.getcmdwintype() ~= "" then
+		return false
+	end
+	-- dont do anything for floating windows
+	if M.is_float(win) then
+		return true
+	end
+	local buf = vim.api.nvim_win_get_buf(win)
+	return M.is_valid_buf(buf)
+end
+
+M.add_highlights = function(win)
+	win = win or vim.api.nvim_get_current_win()
+	if not M.is_valid_win(win) then
+		return
+	end
+	local buf = vim.api.nvim_win_get_buf(win)
+	if M.bufs[buf] then
+		return
+	end
+	local list = M.get_comments({ bufnr = buf })
+	if not list then
+		return
+	end
+	for _, v in pairs(list) do
+		-- vim.notify(v.row .. " " .. v.col .. " " .. v.row2 .. " " .. v.col2)
+		M.bufs[buf] = true
+        -- vim.api.nvim_buf_add_highlight(buf, M.ns, M.hl, v.row - 1, 0, -1)
+		vim.hl.range(buf, M.ns, M.hl, { v.row - 1, v.col - 1 }, { v.row2 - 1, v.col2 - 1 }, { priority = 1000 })
+		-- vim.api.nvim_buf_set_extmark(buf, M.ns, v.row - 1, 0, { hl_group = M.hl, })
+        vim.fn.sign_place(
+            0,
+            "serai-signs",
+            "serai-sign",
+            buf,
+            { lnum = v.row, priority = 1000 }
+        )
+	end
+
+	-- vim.api.nvim_buf_set_extmark(buffer, ns, line, from, {
+	--   end_line = line,
+	--   end_col = to,
+	--   hl_group = hl,
+	--   priority = 500,
+	-- })
+	-- vim.api.nvim_buf_add_highlight(buffer, ns, hl, line, from, to)
+    local res = vim.api.nvim_buf_get_extmarks(0, M.ns, 0, -1, {})
+    -- vim.print(res)
+end
+
+M.ns = vim.api.nvim_create_namespace("serai")
+M.hl = "SeraiId"
+
+function M.signs()
+    vim.fn.sign_define("serai-sign", {
+        text = "🪪",
+        texthl = "SeraiSign",
+    })
+end
+
 ---id=fn-enter
 M.enter = function()
+    M.is_running = true
 	vim.notify("Entering Serai mode...", vll.INFO, { timeout = 1000 })
-	M.is_running = true
+	vim.api.nvim_set_hl(M.ns, "SeraiId", { fg = "#000000", bg = "#AACCEE", bold = true })
+    M.signs()
+    -- vim.cmd("hi def TodoBg" .. kw .. " guibg=" .. hex .. " guifg=" .. fg .. " gui=" .. bg_gui)
+    vim.api.nvim_set_hl_ns(M.ns)
+
+	vim.api.nvim_create_augroup("Serai", { clear = false })
+	vim.api.nvim_create_autocmd({ "BufWinEnter", "WinNew" }, {
+		group = "Serai",
+		callback = function()
+			M.add_highlights()
+		end,
+	})
+	for _, win in pairs(vim.api.nvim_list_wins()) do
+		M.add_highlights(win)
+	end
 end
 
 local builtin = require("fzf-lua.previewer.builtin")
@@ -98,6 +204,14 @@ function MyPreviewer:parse_entry(entry_str)
 	}
 end
 
+-- hard to fetch treesitter
+-- function MyPreviewer:preview_buf_post(entry_str)
+--     MyPreviewer.super.preview_buf_post(self, entry_str)
+--     if not self.win then return end
+--     -- local buf = self.preview_bufnr
+--     M.add_highlights(self.win.preview_winid)
+-- end
+
 -- function MyPreviewer:populate_preview_buf(entry_str)
 --   local tmpbuf = self:get_tmp_buffer()
 --   vim.api.nvim_buf_set_lines(tmpbuf, 0, -1, false, {
@@ -114,9 +228,10 @@ M.search = function(bufname)
 		bufnr = M.add_file_to_buffer(bufname)
 	end
 	bufname = bufname or vim.api.nvim_buf_get_name(bufnr)
-    vim.notify(bufnr..bufname)
+	-- vim.notify(bufnr .. bufname)
 
 	local tbl = M.get_comments({ bufnr = bufnr })
+    -- vim.notify(vim.inspect(tbl))
 	if tbl == nil then
 		return
 	end
@@ -139,7 +254,7 @@ M.search = function(bufname)
 			Enter = function(selected)
 				local row, id = selected[1]:match("^(%d+)%s+(%S+)")
 				vim.notify(id, vll.INFO, { timeout = 1000 })
-                vim.api.nvim_set_current_buf(bufnr)
+				vim.api.nvim_set_current_buf(bufnr)
 				vim.api.nvim_win_set_cursor(0, { tonumber(row), 0 })
 				vim.cmd("normal! zz")
 			end,
@@ -149,30 +264,30 @@ end
 
 -- id=fn-filesearch
 M.filesearch = function(cwd)
-    local cwd = cwd or vim.uv.cwd()
+	local cwd = cwd or vim.uv.cwd()
 	require("fzf-lua").files({
-        cwd = cwd,
-        actions = {
-            Enter = function(selected)
-                local file = require("fzf-lua.path").entry_to_file(selected[1])
-                local path = cwd.."/"..file.stripped
-                vim.notify(vim.inspect(path))
-                M.search(path)
-            end
-        }
-    })
+		cwd = cwd,
+		actions = {
+			Enter = function(selected)
+				local file = require("fzf-lua.path").entry_to_file(selected[1])
+				local path = cwd .. "/" .. file.stripped
+				vim.notify(vim.inspect(path))
+				M.search(path)
+			end,
+		},
+	})
 end
 
 -- id=fn-dirsearch
 M.dirsearch = function()
 	require("fzf-lua").zoxide({
-        actions = {
-            Enter = function(selected)
-                local cwd = selected[1]:match("[^\t]+$") or selected[1]
-                M.filesearch(cwd)
-            end
-        }
-    })
+		actions = {
+			Enter = function(selected)
+				local cwd = selected[1]:match("[^\t]+$") or selected[1]
+				M.filesearch(cwd)
+			end,
+		},
+	})
 end
 
 ---id=fn-inspect
@@ -185,17 +300,25 @@ M.inspect = function()
 	vim.notify(vim.inspect(res))
 end
 
+-- id=fn-quit
 M.quit = function()
 	if not M.is_running then
 		vim.notify("Serai is not running!", vll.WARN, { timeout = 2000 })
 		return
 	end
 	vim.notify("Quitting Serai mode...", vll.INFO, { timeout = 1000 })
+    for buf, _ in pairs(M.bufs) do
+        if vim.api.nvim_buf_is_valid(buf) then
+            pcall(vim.api.nvim_buf_clear_namespace, buf, M.ns, 0, -1)
+        end
+    end
+    M.bufs = {}
+    vim.fn.sign_unplace("serai-signs")
 	M.is_running = false
 end
 
 --- @summary Fetch comments
---- @return nil|{row: number, col: number, text: string}[]
+--- @return nil|{row: number, col: number, row2: number, col2: number, text: string}[]
 --- @see https://github.com/ibhagwan/fzf-lua/blob/main/lua/fzf-lua/providers/buffers.lua#L492
 M.get_comments = function(opts)
 	-- Default to current buffer
@@ -219,15 +342,20 @@ M.get_comments = function(opts)
 		return
 	end
 
+	-- @issue Disable for help (problematic)
+	if vim.tbl_contains({ "vimdoc" }, lang) then
+		return
+	end
 	-- @issue For injected ones, use per-line basis
 	if vim.tbl_contains({ "markdown", "svelte" }, lang) then
 		vim.notify("Using legacy mode", vll.INFO, { timeout = 1000 })
 		local res = {}
 		for i, l in ipairs(vim.api.nvim_buf_get_lines(opts.bufnr, 0, -1, false)) do
 			-- local _, _, match = string.find(l, "^%s*<!--%W*id[:=](%S+)")
-			local start, _, match = string.find(l, "id[:=](%S+)")
-			if match and M.is_comment(opts.bufnr, i, start) then
-				table.insert(res, { row = i, col = start, text = match })
+			local start, finish, prefix, match = string.find(l, "^(%W+)id[:=](%S+)")
+			if match and M.is_comment(opts.bufnr, i, start + prefix:len()) then
+			-- if match then
+				table.insert(res, { row = i, col = start + prefix:len(), row2 = i, col2 = finish + 1, text = match })
 			end
 		end
 		return res
@@ -246,7 +374,7 @@ M.get_comments = function(opts)
 	-- local res = {}
 	-- for _, t in ipairs(trees) do
 	-- 	local root = t:root()
- -- 	for _, node in query:iter_captures(root, 0) do
+	-- 	for _, node in query:iter_captures(root, 0) do
 	-- 		vim.notify(ts.get_node_text(node, opts.bufnr))
 	-- 		local text = ts.get_node_text(node, opts.bufnr)
 	-- 		local _, _, match = string.find(text, "^%W*id[:=](%S+)")
@@ -274,10 +402,10 @@ M.get_comments = function(opts)
 			---```lua
 			---select(3, string.find("-id=hello", "%W*id[:=](%S+)")) == "hello"
 			---```
-			local _, _, match = string.find(text, "^%W*id[:=](%S+)")
+			local col, _, match = string.find(text, "id[:=](%S+)")
 			if match then
-				local row, col = node:range()
-				table.insert(res, { row = row + 1, col = col, text = match })
+				local row, _, row2, col2 = node:range()
+				table.insert(res, { row = row + 1, col = col, row2 = row2 + 1, col2 = col2 + 1, text = match })
 			end
 		end
 		::done::
@@ -316,31 +444,48 @@ M.add_file_to_buffer = function(name)
 	return bufnr
 end
 
+-- local function wait_for_parsing(buf)
+--     local parser = vim.treesitter.get_parser(buf)
+--     if parser then
+--         local tree = parser:parse()[1]
+--         if tree and tree:root() then
+--             vim.notify(parser:lang())
+--             return true
+--         end
+--     end
+--     return false
+-- end
+
 --- @param buf integer Buffer number
 --- @param row integer 1-indexed
 --- @param col integer 1-indexed
 --- @see https://github.com/folke/todo-comments.nvim/blob/main/lua/todo-comments/highlight.lua#L62
 M.is_comment = function(buf, row, col)
+    -- while not wait_for_parsing(buf) do
+    --     vim.wait(1000)  -- Wait for 100ms before checking again
+    -- end
     local captures = vim.treesitter.get_captures_at_pos(buf, row - 1, col)
     for _, c in ipairs(captures) do
         if c.capture == "comment" then
             return true
         end
     end
+    return false
+    -- vim.notify(row.." "..col)
 
-    local win = vim.fn.bufwinid(buf)
-    return win ~= -1
-        and vim.api.nvim_win_call(win, function()
-            for _, i1 in ipairs(vim.fn.synstack(row + 1, col)) do
-                local i2 = vim.fn.synIDtrans(i1)
-                local n1 = vim.fn.synIDattr(i1, "name")
-                local n2 = vim.fn.synIDattr(i2, "name")
-                vim.notify(n1 .. n2)
-                if n1 == "Comment" or n2 == "Comment" then
-                    return true
-                end
-            end
-        end)
+	-- local win = vim.fn.bufwinid(buf)
+	-- return win ~= -1
+	-- 	and vim.api.nvim_win_call(win, function()
+	-- 		for _, i1 in ipairs(vim.fn.synstack(row, col)) do
+	-- 			local i2 = vim.fn.synIDtrans(i1)
+	-- 			local n1 = vim.fn.synIDattr(i1, "name")
+	-- 			local n2 = vim.fn.synIDattr(i2, "name")
+	-- 			vim.notify(n1 .. n2)
+	-- 			if n1 == "Comment" or n2 == "Comment" then
+	-- 				return true
+	-- 			end
+	-- 		end
+	-- 	end)
 end
 
 return M
