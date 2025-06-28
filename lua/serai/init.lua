@@ -444,26 +444,25 @@ M.add_file_to_buffer = function(name)
 	return bufnr
 end
 
--- local function wait_for_parsing(buf)
---     local parser = vim.treesitter.get_parser(buf)
---     if parser then
---         local tree = parser:parse()[1]
---         if tree and tree:root() then
---             vim.notify(parser:lang())
---             return true
---         end
---     end
---     return false
--- end
+local function wait_for_parsing(buf)
+    local parser = vim.treesitter.get_parser(buf)
+    if parser then
+        local tree = parser:parse(true)[1]
+        if tree and tree:root() then
+            return true
+        end
+    end
+    return false
+end
 
 --- @param buf integer Buffer number
 --- @param row integer 1-indexed
 --- @param col integer 1-indexed
 --- @see https://github.com/folke/todo-comments.nvim/blob/main/lua/todo-comments/highlight.lua#L62
 M.is_comment = function(buf, row, col)
-    -- while not wait_for_parsing(buf) do
-    --     vim.wait(1000)  -- Wait for 100ms before checking again
-    -- end
+    while not wait_for_parsing(buf) do
+        vim.wait(100)  -- Wait for 100ms before checking again
+    end
     local captures = vim.treesitter.get_captures_at_pos(buf, row - 1, col)
     for _, c in ipairs(captures) do
         if c.capture == "comment" then
