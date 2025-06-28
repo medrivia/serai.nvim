@@ -65,12 +65,13 @@ end
 
 ---id=fn-reload
 M.reload = function()
+	vim.notify("Reloading Serai plugin...", vll.INFO, { timeout = 1000 })
 	require("lazy.core.loader").reload("serai.nvim")
 end
 
 ---id=fn-enter
 M.enter = function()
-	vim.notify("Entering Serai mode...", vll.INFO)
+	vim.notify("Entering Serai mode...", vll.INFO, { timeout = 1000 })
 	M.is_running = true
 end
 
@@ -131,9 +132,9 @@ M.find = function(bufname)
 		previewer = MyPreviewer,
 		actions = {
 			Enter = function(selected)
-				local row = tonumber(selected[1]:match("^(%d+)%s?"))
-				vim.notify(selected)
-				vim.api.nvim_win_set_cursor(0, { row, 0 })
+				local row, id = selected[1]:match("^(%d+)%s+(%S+)")
+				vim.notify(id, vll.INFO, { timeout = 1000 })
+				vim.api.nvim_win_set_cursor(0, { tonumber(row), 0 })
 				vim.cmd("normal! zz")
 			end,
 		},
@@ -143,7 +144,7 @@ end
 ---id=fn-inspect
 M.inspect = function()
 	if not M.is_running then
-		vim.notify("Serai is not running!", vll.WARN)
+		vim.notify("Serai is not running!", vll.WARN, { timeout = 2000 })
 		return
 	end
 	local res = M.get_comments()
@@ -152,14 +153,14 @@ end
 
 M.quit = function()
 	if not M.is_running then
-		vim.notify("Serai is not running!", vll.WARN)
+		vim.notify("Serai is not running!", vll.WARN, { timeout = 2000 })
 		return
 	end
-	vim.notify("Quitting Serai mode...", vll.INFO)
+	vim.notify("Quitting Serai mode...", vll.INFO, { timeout = 1000 })
 	M.is_running = false
 end
 
---- Fetch comments
+--- @summary Fetch comments
 --- @return nil|{row: number, col: number, text: string}[]
 --- @see https://github.com/ibhagwan/fzf-lua/blob/main/lua/fzf-lua/providers/buffers.lua#L492
 M.get_comments = function(opts)
@@ -168,7 +169,7 @@ M.get_comments = function(opts)
 
 	local __has_ts, _ = pcall(require, "nvim-treesitter")
 	if not __has_ts then
-		vim.notify("Treesitter requires 'nvim-treesitter'.", vll.WARN)
+		vim.notify("Treesitter requires 'nvim-treesitter'.", vll.WARN, { timeout = 2000 })
 		return
 	end
 
@@ -178,40 +179,56 @@ M.get_comments = function(opts)
 	if not M.has_ts_parser(lang) then
 		vim.notify(
 			string.format("No treesitter parser found for '%s' (bufnr=%d).", opts._bufname, opts.bufnr),
-			vll.WARN
+			vll.WARN, { timeout = 2000 }
 		)
 		return
 	end
+
+    -- @issue For Markdown, need to access injected parser (HTML)
+    if lang == "markdown" then
+        local res = {}
+        for i, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+            local _, _, match = string.find(l, "^%s*<!--%W*id[:=](%S+)")
+            if match then
+                table.insert(res, { row = i, col = 0, text = match })
+            end
+        end
+        return res
+    end
 
 	local parser = ts.get_parser(opts.bufnr)
 	if not parser then
 		return
 	end
-	parser:parse()
-	local root = parser:trees()[1]:root()
-	if not root then
+    local trees = parser:parse(true)
+	if not trees then
 		return
 	end
 
-	local query = (ts.query.parse(lang, "(comment) @comment"))
-	if not query then
-		return
-	end
 
-	local res = {}
-	for _, node in query:iter_captures(root, opts.bufnr) do
-		local text = ts.get_node_text(node, opts.bufnr)
-		--- @example
-		---
-		---```lua
-		---select(3, string.find("-id=hello", "%W*id[:=](%S+)")) == "hello"
-		---```
-		local _, _, match = string.find(text, "^%W*id[:=](%S+)")
-		if match then
-			local row, col = node:range()
-			table.insert(res, { row = row + 1, col = col, text = match })
-		end
-	end
+    local res = {}
+	for _, t in ipairs(trees) do
+        local root = t:root()
+        local query = ts.query.parse(lang, "(comment) @comment")
+        if not query then
+            return
+        end
+
+        for _, node in query:iter_captures(root, opts.bufnr) do
+            local text = ts.get_node_text(node, opts.bufnr)
+            --- @example
+            ---
+            ---```lua
+            ---select(3, string.find("-id=hello", "%W*id[:=](%S+)")) == "hello"
+            ---```
+            local _, _, match = string.find(text, "^%W*id[:=](%S+)")
+            if match then
+                local row, col = node:range()
+                table.insert(res, { row = row + 1, col = col, text = match })
+            end
+        end
+        ::done::
+    end
 
 	return res
 end
