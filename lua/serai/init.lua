@@ -1,4 +1,4 @@
---- @see https://github.com/ellisonleao/nvim-plugin-template/blob/main/lua/plugin_name.lua
+-- @see https://github.com/ellisonleao/nvim-plugin-template/blob/main/lua/plugin_name.lua
 
 -- id=util-iif
 function IIF(cond, T, F) -- ternary conditional operator / inline if
@@ -114,10 +114,40 @@ M.is_valid_win = function(win)
 	end
 	-- dont do anything for floating windows
 	if M.is_float(win) then
-		return true
+		return false
 	end
 	local buf = vim.api.nvim_win_get_buf(win)
 	return M.is_valid_buf(buf)
+end
+
+--- @param row integer
+--- @param row2 integer
+---id=fn-update_highlights
+M.update_highlights = function(row, row2)
+    local buf = 0
+    vim.api.nvim_buf_clear_namespace(buf, M.ns, row, row2)
+    for _, sign in pairs(vim.fn.sign_getplaced(buf, { group = "serai-signs" })[1].signs) do
+        if sign.lnum - 1 >= row and sign.lnum - 1 < row2 then
+            vim.fn.sign_unplace("serai-signs", { buffer = buf, id = sign.id })
+        end
+    end
+
+    local lines = vim.api.nvim_buf_get_lines(buf, row, row2, false)
+    for i, l in ipairs(lines) do
+        local start, finish, prefix, match = string.find(l, "^(%W+)id[:=](%S+)")
+        if match and M.is_comment(buf, row + i, start + prefix:len()) then
+            -- vim.notify(string.format("%d %d %d %d", row + i - 1, start + prefix:len(), row + i - 1, finish))
+            vim.hl.range(buf, M.ns, M.hl, { row + i - 1, start + prefix:len() - 1 }, { row + i - 1, finish }, { priority = 10000 })
+            vim.fn.sign_place(
+                0,
+                "serai-signs",
+                "serai-sign",
+                buf,
+                { lnum = row + i, priority = 1000 }
+            )
+        end
+    end
+
 end
 
 ---id=fn-add_highlights
@@ -185,6 +215,15 @@ M.enter = function()
 		group = "Serai",
 		callback = function()
 			M.add_highlights()
+		end,
+	})
+	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+		group = "Serai",
+		callback = function()
+            if not M.is_valid_win(0) then return end
+            vim.notify("Updating...", vll.INFO, { timeout = 250 })
+            local cur = vim.api.nvim_win_get_cursor(0)
+			M.update_highlights(cur[1] - 1, cur[1] )
 		end,
 	})
 	for _, win in pairs(vim.api.nvim_list_wins()) do
